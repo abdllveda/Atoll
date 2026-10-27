@@ -481,6 +481,7 @@ final class SystemBrightnessController {
     private var pollTimer: Timer?
     private let pollInterval: TimeInterval = 0.15
     private let pollChangeThreshold: Float = 0.005
+    private let sliderRapidDeltaThreshold: Float = 0.02
 
     // MARK: - User-initiated brightness gate
     // When true, brightness changes detected via polling / notifications will
@@ -507,12 +508,9 @@ final class SystemBrightnessController {
             NSLog("⚠️ SystemBrightnessController: CoreBrightnessDisplayClient unavailable; will rely on DisplayServices / IODisplay + polling fallback")
         }
         notifyCurrentBrightness()
-        // Only start polling as a fallback when CoreBrightness notifications
-        // are unavailable.  When CoreBrightness IS available the distributed
-        // notifications (registerExternalNotifications) handle detection.
-        if !coreBrightnessClient.isAvailable {
-            startPolling()
-        }
+        // Always start polling so slider adjustments (Touch Bar / Control Center),
+        // DisplayServices fallback, and external changes are tracked reliably.
+        startPolling()
     }
 
     func stop() {
@@ -754,12 +752,23 @@ final class SystemBrightnessController {
             Notification.Name("com.apple.controlcenter.display.brightness"),
             Notification.Name("com.apple.CoreBrightness.DisplayBrightnessChanged")
         ]
+        let userActionNotificationNames: Set<Notification.Name> = [
+            Notification.Name("com.apple.BezelEngine.BrightnessChanged"),
+            Notification.Name("com.apple.BezelServices.BrightnessChanged"),
+            Notification.Name("com.apple.controlcenter.display.brightness")
+        ]
         observers = names.map { name in
             DistributedNotificationCenter.default().addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let self else { return }
+                // If it is an explicit UI notification from Touch Bar / Control Center / Bezel,
+                // mark it as user-initiated so HUD is shown for slider interactions.
+                if userActionNotificationNames.contains(notification.name) {
+                    self.markUserInitiated()
+                }
+
                 // Always keep our baseline in sync with the actual system brightness
                 // so that subsequent key-press deltas are accurate, but only fire the
-                // HUD callback when the change was user-initiated (key press).
+                // HUD callback when the change was user-initiated (key press or slider).
                 let system = self.currentBrightness
                 if self.userInitiatedBrightnessChange {
                     self.notifyCurrentBrightness()
@@ -781,10 +790,17 @@ final class SystemBrightnessController {
             // animation timer already handles emission during key presses.
             guard self.brightnessAnimationTimer == nil else { return }
             let system = self.currentBrightness
-            guard abs(system - self.lastEmittedBrightness) > self.pollChangeThreshold else { return }
+            let delta = abs(system - self.lastEmittedBrightness)
+            guard delta > self.pollChangeThreshold else { return }
+
+            // If the change is rapid enough (typical of dragging a Touch Bar/Control Center slider),
+            // mark it as user-initiated even if distributed notifications were delayed.
+            if delta >= self.sliderRapidDeltaThreshold {
+                self.markUserInitiated()
+            }
 
             if self.userInitiatedBrightnessChange {
-                // User recently pressed a brightness key — show the HUD.
+                // User recently pressed a brightness key or dragged a slider — show the HUD.
                 if !self.didLogPollingFallback {
                     NSLog("ℹ️ SystemBrightnessController: Brightness change detected via polling fallback (value: %.3f)", system)
                     self.didLogPollingFallback = true
