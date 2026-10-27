@@ -50,23 +50,29 @@ jobs:
             -project DynamicIsland.xcodeproj \
             -scheme DynamicIsland \
             -configuration Release \
-            -destination "platform=macOS" \
             -derivedDataPath ./build \
+            ARCHS="x86_64 arm64" \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
 
-      - name: Package App into Zip
+      - name: Copy Resources & Sign Bundle
         run: |
-          cd ./build/Build/Products/Release
-          codesign --force --deep --sign - "Atoll.app"
-          zip -r -y Atoll.app.zip "Atoll.app"
-          mv Atoll.app.zip ../../../../
+          APP_DIR="./build/Build/Products/Release/Atoll.app"
+          APP_RESOURCES="${APP_DIR}/Contents/Resources"
+          SRC_DIR="DynamicIsland/BluetoothHUDAnimations"
+          if [ -d "$SRC_DIR" ]; then
+            mkdir -p "$APP_RESOURCES"
+            cp -R "$SRC_DIR" "$APP_RESOURCES/"
+          fi
+          # Ad-hoc sign the universal bundle
+          codesign --force --deep --sign - "$APP_DIR"
 
       - name: Upload Atoll Application
         uses: actions/upload-artifact@v4
         with:
-          name: Atoll-slider-hud
-          path: Atoll.app.zip
+          name: Atoll-Mac-Universal
+          path: ./build/Build/Products/Release/Atoll.app
           retention-days: 14
